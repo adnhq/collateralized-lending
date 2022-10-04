@@ -214,20 +214,18 @@ contract Exchange is Ownable {
         else 
             token1.transfer(owner(), collateralAmount);
     }
-
+    
+    // untested changes
     function reinstate(uint txId) external onlyOwner {
-        uint256 amount = _loans[txId].amountCollateral;
-        require(amount > 0, "e07");
-
-        address loanee = _loans[txId].loanee;
-        bool collat0 = _loans[txId].collat0;
+        Loan memory loan = _loans[txId]; 
+        if(loan.amountCollateral == 0) revert("e07");
 
         delete _loans[txId];
 
-        if(collat0) 
-            token0.transfer(loanee, amount);
+        if(loan.collat0) 
+            token0.transfer(loan.loanee, loan.amountCollateral);
         else 
-            token1.transfer(loanee, amount);
+            token1.transfer(loan.loanee, loan.amountCollateral);
 
     }
 
