@@ -21,9 +21,6 @@ contract Exchange is Ownable {
     using Counters for Counters.Counter;
     Counters.Counter private _txId;
 
-    AggregatorV3Interface internal feed0;
-    AggregatorV3Interface internal feed1;
-
     uint public constant MIN_COLLAT = 120;
     uint public constant MAX_COLLAT = 200;
     uint public constant REFI_FEE = 10; 
@@ -31,6 +28,9 @@ contract Exchange is Ownable {
     IERC20 public constant token0 = IERC20(0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c); 
     IERC20 public constant token1 = IERC20(0x2170Ed0880ac9A755fd29B2688956BD959F933F8); 
     IERC20 public distToken;
+
+    AggregatorV3Interface private _feed0;
+    AggregatorV3Interface private _feed1;
 
     struct Loan {
         uint amountLoaned;
@@ -49,21 +49,21 @@ contract Exchange is Ownable {
 
     constructor(
         address _distToken,
-        address _feed0,
-        address _feed1
+        address feed0_,
+        address feed1_
     ) {
-        feed0 = AggregatorV3Interface(_feed0);
-        feed1 = AggregatorV3Interface(_feed1); 
+        _feed0 = AggregatorV3Interface(feed0_);
+        _feed1 = AggregatorV3Interface(feed1_); 
         distToken = IERC20(_distToken);
     }
 
     function getRate0() public view returns (uint) {
-        ( ,int price, , , ) = feed0.latestRoundData();
+        ( ,int price, , , ) = _feed0.latestRoundData();
         return uint(price) / 1e8; 
     }
 
     function getRate1() public view returns (uint) {
-        ( ,int price, , , ) = feed1.latestRoundData();
+        ( ,int price, , , ) = _feed1.latestRoundData();
         return uint(price) / 1e8; 
     }
     
