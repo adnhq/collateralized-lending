@@ -210,9 +210,9 @@ contract Exchange is Ownable {
         loan.amountCollateral -= collateralAmount;
 
         if(loan.collat0) 
-            token0.transfer(owner(), collateralAmount);
+            token0.transfer(msg.sender, collateralAmount);
         else 
-            token1.transfer(owner(), collateralAmount);
+            token1.transfer(msg.sender, collateralAmount);
     }
     
     // untested changes
