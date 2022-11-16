@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity =0.8.16;
+pragma solidity 0.8.7;
 
 // REVERT LOG: 
 // e00 : Incorrect input/output amount
@@ -27,19 +27,19 @@ contract Exchange is Ownable {
 
     IERC20 public constant token0 = IERC20(0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c); 
     IERC20 public constant token1 = IERC20(0x2170Ed0880ac9A755fd29B2688956BD959F933F8); 
-    IERC20 public distToken;
+    IERC20 public immutable distToken;
 
-    AggregatorV3Interface private _feed0;
-    AggregatorV3Interface private _feed1;
+    AggregatorV3Interface private _priceFeed0;
+    AggregatorV3Interface private _priceFeed1;
 
     struct Loan {
         uint amountLoaned;
-        uint amountCollateral;
-        uint collatPercentage;
-        uint lastPaidTimestamp;
+        uint amountCollat;
         uint amountInterest;
-        address loanee;
-        bool collat0; 
+        uint collateralPercentage;
+        uint interestPaidTimestamp;
+        address loanedTo;
+        bool loanedForToken0; 
     }
 
     mapping(uint => Loan) private _loans;
@@ -49,21 +49,21 @@ contract Exchange is Ownable {
 
     constructor(
         address _distToken,
-        address feed0_,
-        address feed1_
+        address priceFeed0_,
+        address priceFeed1
     ) {
-        _feed0 = AggregatorV3Interface(feed0_);
-        _feed1 = AggregatorV3Interface(feed1_); 
+        _priceFeed0 = AggregatorV3Interface(priceFeed0_);
+        _priceFeed1 = AggregatorV3Interface(priceFeed1); 
         distToken = IERC20(_distToken);
     }
 
     function getRate0() public view returns (uint) {
-        ( ,int price, , , ) = _feed0.latestRoundData();
+        ( ,int price, , , ) = _priceFeed0.latestRoundData();
         return uint(price) / 1e8; 
     }
 
     function getRate1() public view returns (uint) {
-        ( ,int price, , , ) = _feed1.latestRoundData();
+        ( ,int price, , , ) = _priceFeed1.latestRoundData();
         return uint(price) / 1e8; 
     }
     
@@ -72,56 +72,62 @@ contract Exchange is Ownable {
 
     }
 
-    function takeLoan0(uint256 amountInput, uint256 amountOutput) external {
-        require(amountInput > 0 && amountOutput > 0, "e00");
+    /// @notice Take loan against token0 
+    /// @param amountIn amount of token0 to be provided as collateral
+    /// @param amountOut amount of distToken to loan
+    function takeLoan0(uint256 amountIn, uint256 amountOut) external {
+        require(amountIn > 0 && amountOut > 0, "e00");
 
-        uint collateral = (amountInput * getRate0() * 100) / amountOutput;
+        uint collateral = (amountIn * getRate0() * 100) / amountOut;
         require(collateral >= MIN_COLLAT && collateral <= MAX_COLLAT, "e01");
 
         _txId.increment();
         uint256 cId = _txId.current();
 
         _loans[cId] = Loan(
-            amountOutput, 
-            amountInput, 
+            amountOut, 
+            amountIn,
+            0, 
             collateral, 
             block.timestamp, 
-            0,
             msg.sender, 
             true
         );
 
-        token0.transferFrom(msg.sender, address(this), amountInput);
+        token0.transferFrom(msg.sender, address(this), amountIn);
 
-        distToken.transfer(msg.sender, amountOutput);
+        distToken.transfer(msg.sender, amountOut);
 
-        emit TokensLoaned(msg.sender, cId, amountOutput, block.timestamp);
+        emit TokensLoaned(msg.sender, cId, amountOut, block.timestamp);
     }
 
-    function takeLoan1(uint256 amountInput, uint256 amountOutput) external {
-        require(amountInput > 0 && amountOutput > 0, "e00");
+    /// @notice Take loan against token1
+    /// @param amountIn amount of token1 to be provided as collateral
+    /// @param amountOut amount of distToken to loan
+    function takeLoan1(uint256 amountIn, uint256 amountOut) external {
+        require(amountIn > 0 && amountOut > 0, "e00");
 
-        uint collateral = (amountInput * getRate1() * 100) / amountOutput;
+        uint collateral = (amountIn * getRate1() * 100) / amountOut;
         require(collateral >= MIN_COLLAT && collateral <= MAX_COLLAT, "e01");
 
         _txId.increment();
         uint256 cId = _txId.current();
 
         _loans[cId] = Loan(
-            amountOutput, 
-            amountInput, 
+            amountOut, 
+            amountIn, 
+            0,
             collateral, 
             block.timestamp, 
-            0,
             msg.sender, 
             false
         );
 
-        token1.transferFrom(msg.sender, address(this), amountInput);
+        token1.transferFrom(msg.sender, address(this), amountIn);
 
-        distToken.transfer(msg.sender, amountOutput);
+        distToken.transfer(msg.sender, amountOut);
 
-        emit TokensLoaned(msg.sender, cId, amountOutput, block.timestamp);
+        emit TokensLoaned(msg.sender, cId, amountOut, block.timestamp);
     }
 
     function _getInterestPercentage(uint collateral) internal pure returns (uint256) {
@@ -139,11 +145,13 @@ contract Exchange is Ownable {
             revert("e01");
     }
 
+    /// @notice Pay accumulated interest for input txId
+    /// @param txId transaction Id of the loan to pay interest for
     function payInterest(uint txId) external {
         uint totalInterest = getTotalInterest(txId);
         require(totalInterest > 0, "e02"); 
 
-        _loans[txId].lastPaidTimestamp = block.timestamp;
+        _loans[txId].interestPaidTimestamp = block.timestamp;
         _loans[txId].amountInterest = 0;
         
         distToken.transferFrom(msg.sender, owner(), totalInterest);
@@ -151,43 +159,49 @@ contract Exchange is Ownable {
         emit InterestPaid(txId, msg.sender, totalInterest, block.timestamp);
     }
 
+    /// @notice Reimburse a portion of loaned amount
+    /// @param txId transaction Id of the loan to reimburse
+    /// @param amount amount of loan to reimburse 
     function reimburseLoan(uint txId, uint amount) external { 
         Loan storage loan = _loans[txId];
 
-        require(msg.sender == loan.loanee, "e03");
-        require(amount > 0 && amount <= loan.amountCollateral, "e00");
+        require(msg.sender == loan.loanedTo, "e03");
+        require(amount > 0 && amount <= loan.amountCollat, "e00");
 
         loan.amountInterest = getTotalInterest(txId);
 
-        loan.lastPaidTimestamp = block.timestamp;
-        loan.amountCollateral -= amount;
+        loan.interestPaidTimestamp = block.timestamp;
+        loan.amountCollat -= amount;
 
-        if(loan.amountCollateral == 0) delete _loans[txId];
+        if(loan.amountCollat == 0) delete _loans[txId];
         
         distToken.transferFrom(msg.sender, address(this), amount);
     }
 
+    /// @notice Refinance for a specific txId
+    /// @param txId transaction Id of loan to refinance 
     function refinance(uint txId) external {
         Loan storage loan = _loans[txId];
-        require(msg.sender == loan.loanee, "e03");
+        require(msg.sender == loan.loanedTo, "e03");
 
-        uint rate = loan.collat0 ? getRate0() : getRate1();
+        uint rate = loan.loanedForToken0 ? getRate0() : getRate1();
         uint fee = (loan.amountLoaned * REFI_FEE) / 100;
-        uint claimable = ((rate * loan.amountCollateral * 100) / loan.collatPercentage) - loan.amountLoaned - fee;
+        uint claimable = ((rate * loan.amountCollat * 100) / loan.collateralPercentage) - loan.amountLoaned - fee;
 
         require(claimable > 0, "e04");
 
         loan.amountInterest = getTotalInterest(txId);
-        loan.lastPaidTimestamp = block.timestamp;
+        loan.interestPaidTimestamp = block.timestamp;
         loan.amountLoaned += claimable;
 
         distToken.transfer(owner(), fee);
         distToken.transfer(msg.sender, claimable);
     }
 
+    /// @notice Returns total accumulated interest for `txId`
     function getTotalInterest(uint txId) public view returns (uint256) {
-        uint annualInterest = (_loans[txId].amountLoaned * _getInterestPercentage(_loans[txId].collatPercentage)) / 100;
-        uint currentInterest = (annualInterest * (block.timestamp - _loans[txId].lastPaidTimestamp)) / 365 days;
+        uint annualInterest = (_loans[txId].amountLoaned * _getInterestPercentage(_loans[txId].collateralPercentage)) / 100;
+        uint currentInterest = (annualInterest * (block.timestamp - _loans[txId].interestPaidTimestamp)) / 365 days;
         return currentInterest + _loans[txId].amountInterest;
     }
 
@@ -197,35 +211,40 @@ contract Exchange is Ownable {
     
     /* | --- ONLY OWNER --- | */
 
+    /// @notice Collect unpaid interest for `txId` using provided collateral
+    /// @param txId transaction id to collect interest for
+    /// @param collateralAmount amount of collateral to be used to pay for interest
+    /// NOTE: Can only be called if interest has not been paid for `txId` in over 90 days
     function collectInterest(uint txId, uint collateralAmount) external onlyOwner {
         Loan storage loan = _loans[txId];
-        require(block.timestamp - loan.lastPaidTimestamp >= 90 days, "e05");
+        require(block.timestamp - loan.interestPaidTimestamp >= 90 days, "e05");
         
         uint cInterest = getTotalInterest(txId);
-        uint amountStable = collateralAmount * (loan.collat0 ? getRate0() : getRate1());
+        uint amountStable = collateralAmount * (loan.loanedForToken0 ? getRate0() : getRate1());
         require(cInterest >= amountStable, "e06");
         
-        loan.lastPaidTimestamp = block.timestamp;
+        loan.interestPaidTimestamp = block.timestamp;
         loan.amountInterest = cInterest - amountStable;
-        loan.amountCollateral -= collateralAmount;
+        loan.amountCollat -= collateralAmount;
 
-        if(loan.collat0) 
+        if(loan.loanedForToken0) 
             token0.transfer(msg.sender, collateralAmount);
         else 
             token1.transfer(msg.sender, collateralAmount);
     }
     
-    // untested changes
+    /// @notice Reinstate and remove a specific loan
+    /// @param txId transaction id to reinstate
     function reinstate(uint txId) external onlyOwner {
         Loan memory loan = _loans[txId]; 
-        if(loan.amountCollateral == 0) revert("e07");
+        if(loan.amountCollat == 0) revert("e07");
 
         delete _loans[txId];
 
-        if(loan.collat0) 
-            token0.transfer(loan.loanee, loan.amountCollateral);
+        if(loan.loanedForToken0) 
+            token0.transfer(loan.loanedTo, loan.amountCollat);
         else 
-            token1.transfer(loan.loanee, loan.amountCollateral);
+            token1.transfer(loan.loanedTo, loan.amountCollat);
 
     }
 
