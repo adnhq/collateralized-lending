@@ -50,10 +50,10 @@ contract Exchange is Ownable {
     constructor(
         address _distToken,
         address priceFeed0_,
-        address priceFeed1
+        address priceFeed1_
     ) {
         _priceFeed0 = AggregatorV3Interface(priceFeed0_);
-        _priceFeed1 = AggregatorV3Interface(priceFeed1); 
+        _priceFeed1 = AggregatorV3Interface(priceFeed1_); 
         distToken = IERC20(_distToken);
     }
 
