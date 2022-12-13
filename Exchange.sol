@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.7;
+pragma solidity =0.8.7;
 
 // REVERT LOG: 
 // e00 : Incorrect input/output amount
@@ -17,17 +17,22 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
+interface IERC20Extra is IERC20 {
+    function mint(address account, uint amount) external;
+    function burn(address account, uint amount) external;
+}
+
 contract Exchange is Ownable {
     using Counters for Counters.Counter;
     Counters.Counter private _txId;
 
-    uint public constant MIN_COLLAT = 120;
-    uint public constant MAX_COLLAT = 200;
-    uint public constant REFI_FEE = 10; 
+    uint public constant MINIMUM_COLLATERAL = 120;
+    uint public constant MAXIMUM_COLLATERAL = 200;
+    uint public constant REFINANCE_FEE = 10; 
 
     IERC20 public constant token0 = IERC20(0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c); 
     IERC20 public constant token1 = IERC20(0x2170Ed0880ac9A755fd29B2688956BD959F933F8); 
-    IERC20 public immutable distToken;
+    IERC20Extra public immutable distToken;
 
     AggregatorV3Interface private _priceFeed0;
     AggregatorV3Interface private _priceFeed1;
@@ -54,7 +59,7 @@ contract Exchange is Ownable {
     ) {
         _priceFeed0 = AggregatorV3Interface(priceFeed0_);
         _priceFeed1 = AggregatorV3Interface(priceFeed1_); 
-        distToken = IERC20(_distToken);
+        distToken = IERC20Extra(_distToken);
     }
 
     function getRate0() public view returns (uint) {
@@ -79,7 +84,7 @@ contract Exchange is Ownable {
         require(amountIn > 0 && amountOut > 0, "e00");
 
         uint collateral = (amountIn * getRate0() * 100) / amountOut;
-        require(collateral >= MIN_COLLAT && collateral <= MAX_COLLAT, "e01");
+        require(collateral >= MINIMUM_COLLATERAL && collateral <= MAXIMUM_COLLATERAL, "e01");
 
         _txId.increment();
         uint256 cId = _txId.current();
@@ -96,7 +101,7 @@ contract Exchange is Ownable {
 
         token0.transferFrom(msg.sender, address(this), amountIn);
 
-        distToken.transfer(msg.sender, amountOut);
+        distToken.mint(msg.sender, amountOut);
 
         emit TokensLoaned(msg.sender, cId, amountOut, block.timestamp);
     }
@@ -108,7 +113,7 @@ contract Exchange is Ownable {
         require(amountIn > 0 && amountOut > 0, "e00");
 
         uint collateral = (amountIn * getRate1() * 100) / amountOut;
-        require(collateral >= MIN_COLLAT && collateral <= MAX_COLLAT, "e01");
+        require(collateral >= MINIMUM_COLLATERAL && collateral <= MAXIMUM_COLLATERAL, "e01");
 
         _txId.increment();
         uint256 cId = _txId.current();
@@ -125,7 +130,7 @@ contract Exchange is Ownable {
 
         token1.transferFrom(msg.sender, address(this), amountIn);
 
-        distToken.transfer(msg.sender, amountOut);
+        distToken.mint(msg.sender, amountOut);
 
         emit TokensLoaned(msg.sender, cId, amountOut, block.timestamp);
     }
@@ -175,7 +180,7 @@ contract Exchange is Ownable {
 
         if(loan.amountCollat == 0) delete _loans[txId];
         
-        distToken.transferFrom(msg.sender, address(this), amount);
+        distToken.burn(msg.sender, amount);
     }
 
     /// @notice Refinance for a specific txId
@@ -185,7 +190,7 @@ contract Exchange is Ownable {
         require(msg.sender == loan.loanedTo, "e03");
 
         uint rate = loan.loanedForToken0 ? getRate0() : getRate1();
-        uint fee = (loan.amountLoaned * REFI_FEE) / 100;
+        uint fee = (loan.amountLoaned * REFINANCE_FEE) / 100;
         uint claimable = ((rate * loan.amountCollat * 100) / loan.collateralPercentage) - loan.amountLoaned - fee;
 
         require(claimable > 0, "e04");
@@ -194,8 +199,8 @@ contract Exchange is Ownable {
         loan.interestPaidTimestamp = block.timestamp;
         loan.amountLoaned += claimable;
 
-        distToken.transfer(owner(), fee);
-        distToken.transfer(msg.sender, claimable);
+        distToken.transferFrom(msg.sender, owner(), fee);
+        distToken.mint(msg.sender, claimable);
     }
 
     /// @notice Returns total accumulated interest for `txId`
@@ -248,7 +253,7 @@ contract Exchange is Ownable {
 
     }
 
-    function withdrawTokens(uint amount) external onlyOwner {
+    function withdraw(uint amount) external onlyOwner {
         distToken.transfer(msg.sender, amount);
     }
 
